@@ -1,48 +1,33 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
-import torch
-import torchaudio
-import os
+import whisper
 import tempfile
+import os
 
 # Инициализация FastAPI приложения
-app = FastAPI(title="Silero STT API")
+app = FastAPI(title="Whisper STT API")
 
-# Глобальные переменные для модели и утилит (изначально пустые)
+# Глобальная переменная для модели (изначально пустая)
 model = None
-utils = None
 
-# Функция для загрузки модели Silero (теперь она вызывается отдельно)
+# Функция для загрузки модели Whisper
 def load_model():
-    global model, utils
-    print("Загрузка модели Silero STT... Это может занять время.")
-    language = 'ru'
-    model_id = 'v4_ru'
-    
-    # Загружаем модель и утилиты
-    model, decoder, utils_new = torch.hub.load(repo_or_dir='snakers4/silero-models',
-                                       model='silero_stt',
-                                       language=language,
-                                       device='cpu',
-                                       trust_repo=True)
-    model.eval()
-    
-    # Сохраняем нужные утилиты
-    (read_batch, split_into_batches,
-     read_audio, prepare_model_input) = utils_new
-    utils = (read_batch, split_into_batches, read_audio, prepare_model_input)
-    
-    print("Модель успешно загружена!")
-    return model, utils
+    global model
+    print("Загрузка модели Whisper... Это займет несколько секунд.")
+    # 'tiny' - самая быстрая и легкая модель. Есть 'base', 'small', 'medium', 'large'
+    model = whisper.load_model("tiny")
+    print("Модель Whisper успешно загружена!")
+    return model
 
 @app.get("/", tags=["Health Check"])
 async def health_check():
     """Простой эндпоинт для проверки, что сервис работает."""
-    return {"status": "ok", "message": "Silero STT API is running"}
+    return {"status": "ok", "message": "Whisper STT API is running"}
 
 @app.post("/stt", tags=["Speech-to-Text"])
 async def speech_to_text(file: UploadFile = File(...)):
     """
     Принимает аудиофайл, возвращает транскрибированный текст.
+    Поддерживаемые форматы: wav, mp3, ogg, flac и другие, которые понимает ffmpeg.
     """
     # Проверяем, загружена ли модель. Если нет - загружаем.
     global model
@@ -54,29 +39,20 @@ async def speech_to_text(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Файл не был предоставлен.")
 
     # Создаем временный файл для сохранения аудио
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_audio:
         try:
             audio_content = await file.read()
             tmp_audio.write(audio_content)
             tmp_audio_path = tmp_audio.name
 
-            # Используем утилиты Silero для чтения и подготовки аудио
-            read_audio_func = utils[2]
-            prepare_model_input_func = utils[3]
+            # Отправляем файл на транскрибацию в Whisper
+            result = model.transcribe(tmp_audio_path, language="ru")
             
-            wav = read_audio_func(tmp_audio_path)
-            input_tensor = prepare_model_input_func([wav])
-
-            output = model(input_tensor)
-            
-            # Декодируем результат в текст
-            # Для простоты используем greedy декодер
-            predicted_text = decoder(output[0]).cpu().numpy()[0]
-            
-            return {"text": str(predicted_text)}
+            return {"text": result["text"]}
 
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Ошибка при обработке аудио: {str(e)}")
         finally:
+            # Удаляем временный файл
             if os.path.exists(tmp_audio_path):
                 os.remove(tmp_audio_path)
