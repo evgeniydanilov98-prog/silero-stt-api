@@ -7,34 +7,31 @@ import tempfile
 # Инициализация FastAPI приложения
 app = FastAPI(title="Silero STT API")
 
-# Глобальные переменные для модели и утилит
+# Глобальные переменные для модели и утилит (изначально пустые)
 model = None
 utils = None
 
-# Функция для загрузки модели Silero
+# Функция для загрузки модели Silero (теперь она вызывается отдельно)
 def load_model():
     global model, utils
     print("Загрузка модели Silero STT... Это может занять время.")
-    # Указываем язык и модель
     language = 'ru'
     model_id = 'v4_ru'
     
     # Загружаем модель и утилиты
-    model, decoder, utils = torch.hub.load(repo_or_dir='snakers4/silero-models',
+    model, decoder, utils_new = torch.hub.load(repo_or_dir='snakers4/silero-models',
                                            model='silero_stt',
                                            language=language,
-                                           device='cpu') # Для Render Free Tier используем CPU
-    model.eval() # Переводим модель в режим оценки
+                                           device='cpu')
+    model.eval()
     
     # Сохраняем нужные утилиты
     (read_batch, split_into_batches,
-     read_audio, prepare_model_input) = utils
+     read_audio, prepare_model_input) = utils_new
+    utils = (read_batch, split_into_batches, read_audio, prepare_model_input)
     
     print("Модель успешно загружена!")
-    return model, (read_batch, split_into_batches, read_audio, prepare_model_input)
-
-# Загружаем модель при старте приложения
-model, utils = load_model()
+    return model, utils
 
 @app.get("/", tags=["Health Check"])
 async def health_check():
@@ -45,15 +42,19 @@ async def health_check():
 async def speech_to_text(file: UploadFile = File(...)):
     """
     Принимает аудиофайл, возвращает транскрибированный текст.
-    Поддерживаемые форматы: wav, mp3, ogg, flac.
     """
+    # Проверяем, загружена ли модель. Если нет - загружаем.
+    global model
+    if model is None:
+        print("Модель еще не загружена, загружаю сейчас...")
+        load_model()
+
     if not file:
         raise HTTPException(status_code=400, detail="Файл не был предоставлен.")
 
     # Создаем временный файл для сохранения аудио
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_audio:
         try:
-            # Читаем содержимое загруженного файла
             audio_content = await file.read()
             tmp_audio.write(audio_content)
             tmp_audio_path = tmp_audio.name
@@ -62,11 +63,9 @@ async def speech_to_text(file: UploadFile = File(...)):
             read_audio_func = utils[2]
             prepare_model_input_func = utils[3]
             
-            # Читаем аудио и приводим к нужному формату
             wav = read_audio_func(tmp_audio_path)
             input_tensor = prepare_model_input_func([wav])
 
-            # Запускаем распознавание
             output = model(input_tensor)
             
             # Декодируем результат в текст
@@ -78,6 +77,5 @@ async def speech_to_text(file: UploadFile = File(...)):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Ошибка при обработке аудио: {str(e)}")
         finally:
-            # Удаляем временный файл
             if os.path.exists(tmp_audio_path):
                 os.remove(tmp_audio_path)
