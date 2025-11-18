@@ -20,9 +20,10 @@ def load_model():
     
     # Загружаем модель и утилиты
     model, decoder, utils_new = torch.hub.load(repo_or_dir='snakers4/silero-models',
-                                           model='silero_stt',
-                                           language=language,
-                                           device='cpu')
+                                       model='silero_stt',
+                                       language=language,
+                                       device='cpu',
+                                       trust_repo=True)
     model.eval()
     
     # Сохраняем нужные утилиты
